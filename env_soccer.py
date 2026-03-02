@@ -28,6 +28,13 @@ class StepInfo:
     step: int
 
 class GridSoccerEnv:
+    """
+    Discrete grid soccer:
+    - Player (human or scripted) vs Agent (Q-learning)
+    - Ball is on a cell; whoever steps onto the ball gains possession
+    - Possessor dribbles the ball (ball position = possessor position)
+    - Goal cells at right side; if ball enters goal -> score -> episode ends
+    """
 
 
     def __init__(self, cfg: GameConfig, seed: Optional[int] = None):
@@ -46,10 +53,12 @@ class GridSoccerEnv:
         self.step_count = 0
         w, h = self.cfg.grid_w, self.cfg.grid_h
 
+        # Place agent on left-middle, player on left-bottom-ish, ball center
         self.agent_pos = (1, h // 2)
         self.player_pos = (1, clamp(h // 2 + 1, 0, h - 1))
+        # --- random ball spawn (not on goal, not on players) ---
         self.possession = POS_NONE
-        for _ in range(200):
+        for _ in range(200):  # avoid infinite loop
             bx = self.rng.randrange(0, w)
             by = self.rng.randrange(0, h)
             if (bx, by) in self.goal_cells:
@@ -73,13 +82,15 @@ class GridSoccerEnv:
 
         prev_possession = self.possession
 
+
         prev_agent_pos = self.agent_pos
         prev_ball_pos = self.ball_pos
 
-
+        # 1) Move player then agent
         self.player_pos = self._move(self.player_pos, player_action)
         self.agent_pos = self._move(self.agent_pos, agent_action)
 
+        # 2) Possession update: if both on ball, agent wins tie
         if self.player_pos == self.ball_pos and self.agent_pos == self.ball_pos:
             self.possession = POS_AGENT
         elif self.player_pos == self.ball_pos:
@@ -87,17 +98,19 @@ class GridSoccerEnv:
         elif self.agent_pos == self.ball_pos:
             self.possession = POS_AGENT
 
-
+        # 3) Dribble: ball follows possessor
         if self.possession == POS_PLAYER:
             self.ball_pos = self.player_pos
         elif self.possession == POS_AGENT:
             self.ball_pos = self.agent_pos
 
+        # 4) Reward shaping on possession change
         if prev_possession != self.possession:
             if self.possession == POS_AGENT:
                 reward += self.cfg.gain_possession_reward
             elif prev_possession == POS_AGENT and self.possession != POS_AGENT:
                 reward += self.cfg.lose_possession_penalty
+
 
         if self.possession == POS_AGENT:
             goal_x = self.cfg.goal_x
@@ -105,13 +118,13 @@ class GridSoccerEnv:
             new_dist = abs(goal_x - self.agent_pos[0])
 
             if new_dist < prev_dist:
-                reward += 0.20
+                reward += 0.20  # 向球门前进
             elif new_dist > prev_dist:
-                reward -= 0.20
+                reward -= 0.20  # 远离球门
             else:
-                reward -= 0.05
+                reward -= 0.05  # 原地/横移：轻微惩罚，减少左右摇摆
 
-
+        # 5) Goal check
         if self.ball_pos in self.goal_cells:
             done = True
             if self.possession == POS_AGENT:
@@ -124,7 +137,7 @@ class GridSoccerEnv:
                 reward = 0.0
                 scored_by = 0
 
-
+        # 6) Max steps
         if not done and self.step_count >= self.cfg.max_steps_per_episode:
             done = True
             scored_by = 0
@@ -188,10 +201,17 @@ class GridSoccerEnv:
         }
 
 def scripted_player_policy(env: GridSoccerEnv) -> int:
-
+    """
+    Weakened scripted opponent (to give agent learning signal):
+    - With small probability, do STAY or a random move (noise).
+    - Otherwise:
+        * If player has possession, move right to goal.
+        * Else chase the ball.
+    """
     (px, py) = env.player_pos
     (bx, by) = env.ball_pos
     cfg = env.cfg
+
 
     r = env.rng.random()
     if r < 0.12:
@@ -204,6 +224,7 @@ def scripted_player_policy(env: GridSoccerEnv) -> int:
             return ACTION_RIGHT
         return ACTION_STAY
 
+    # chase ball
     if bx > px:
         return ACTION_RIGHT
     if bx < px:
