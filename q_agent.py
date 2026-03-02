@@ -24,7 +24,6 @@ class QLearningAgent:
         max_q = max(qs)
         best = [a for a, q in enumerate(qs) if q == max_q]
 
-        # ✅ deterministic-ish tie-break (more stable behavior)
         # Prefer RIGHT > LEFT > UP > DOWN > STAY
         pref_order = [3, 2, 0, 1, 4]
         for a in pref_order:
